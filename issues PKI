@@ -1,25 +1,35 @@
 Option Explicit
 
 Public Sub InstallWeeklyUpdateButton()
-    Dim ws As Worksheet, shp As Shape
+    Dim ws As Worksheet, kpi As Worksheet, shp As Shape
     Set ws = ThisWorkbook.Worksheets("Instructions")
+    Set kpi = ThisWorkbook.Worksheets("KPI")
     On Error Resume Next
     ws.Shapes("btnUpdateWeeklyFile").Delete
+    ws.Shapes("btnRefreshKPI").Delete
+    kpi.Shapes("btnRefreshKPI").Delete
     On Error GoTo 0
     Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, ws.Range("B10").Left, ws.Range("B10").Top, ws.Range("B10:E12").Width, ws.Range("B10:E12").Height)
     With shp
-        .Name = "btnUpdateWeeklyFile"
-        .OnAction = "UpdateWeeklyFile"
-        .Fill.ForeColor.RGB = RGB(47, 117, 181)
-        .Line.ForeColor.RGB = RGB(31, 78, 121)
+        .Name = "btnUpdateWeeklyFile": .OnAction = "UpdateWeeklyFile"
+        .Fill.ForeColor.RGB = RGB(47, 117, 181): .Line.ForeColor.RGB = RGB(31, 78, 121)
         .TextFrame2.TextRange.Text = "UPDATE WEEKLY FILE"
         .TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(255, 255, 255)
-        .TextFrame2.TextRange.Font.Bold = msoTrue
-        .TextFrame2.TextRange.Font.Size = 15
+        .TextFrame2.TextRange.Font.Bold = msoTrue: .TextFrame2.TextRange.Font.Size = 15
         .TextFrame2.VerticalAnchor = msoAnchorMiddle
         .TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
     End With
-    MsgBox "The update button is ready.", vbInformation
+    Set shp = kpi.Shapes.AddShape(msoShapeRoundedRectangle, kpi.Range("N3").Left, kpi.Range("N3").Top, kpi.Range("N3:P5").Width, kpi.Range("N3:P5").Height)
+    With shp
+        .Name = "btnRefreshKPI": .OnAction = "RefreshKPI"
+        .Fill.ForeColor.RGB = RGB(112, 173, 71): .Line.ForeColor.RGB = RGB(84, 130, 53)
+        .TextFrame2.TextRange.Text = "REFRESH KPI"
+        .TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(255, 255, 255)
+        .TextFrame2.TextRange.Font.Bold = msoTrue: .TextFrame2.TextRange.Font.Size = 13
+        .TextFrame2.VerticalAnchor = msoAnchorMiddle
+        .TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    End With
+    MsgBox "The weekly update button is on Instructions and the KPI button is on KPI.", vbInformation
 End Sub
 
 Public Sub UpdateWeeklyFile()
@@ -68,6 +78,7 @@ Public Sub UpdateWeeklyFile()
     End If
 
     UpdateWeeklySheet newWs, d, added, changed, filled, kept
+    RefreshKPIForSheet newWs
     newWs.Activate
     MsgBox "Weekly update completed:" & vbCrLf & _
            "Sheet: " & target & vbCrLf & _
@@ -90,6 +101,98 @@ Fail:
     MsgBox "Update stopped: " & Err.Description, vbCritical
     Resume SafeExit
 End Sub
+
+Public Sub RefreshKPI()
+    Dim ws As Worksheet
+    On Error GoTo Fail
+    Set ws = ActiveSheet
+    If Not (UCase$(ws.Name) Like "####-W##" Or UCase$(ws.Name) Like "W##") Then Set ws = LatestWeeklySheet(ThisWorkbook)
+    If ws Is Nothing Then Err.Raise vbObjectError + 108, , "No weekly sheet was found."
+    RefreshKPIForSheet ws
+    ThisWorkbook.Worksheets("KPI").Activate
+    MsgBox "KPI updated for " & KPIWeekKey(ws.Name) & ".", vbInformation
+    Exit Sub
+Fail:
+    MsgBox "KPI update stopped: " & Err.Description, vbCritical
+End Sub
+
+Private Sub RefreshKPIForSheet(ws As Worksheet)
+    Dim kpi As Worksheet, w As Object, m As Object, counts(4 To 8) As Long
+    Dim lastRow As Long, lastKPI As Long, targetRow As Long, r As Long, c As Long
+    Dim id As String, oldRef As String, s As String, key As String, isNew As Boolean
+    Set kpi = SheetByName(ThisWorkbook, "KPI")
+    If kpi Is Nothing Then Err.Raise vbObjectError + 109, , "The KPI sheet was not found."
+    Set w = HeaderMap(ws): ValidateWeeklyHeaders w
+    Set m = KPIStatusColumns(ThisWorkbook)
+    lastRow = LastIssueRow(ws, w)
+    For r = 2 To lastRow
+        id = Trim$(CStr(ws.Cells(r, w("S2IRIUS")).Value2))
+        oldRef = Trim$(CStr(ws.Cells(r, w("OLD REFERENCE")).Value2))
+        If Len(id) > 0 Or Len(oldRef) > 0 Then
+            s = UCase$(Trim$(CStr(ws.Cells(r, w("STATUS")).Value2)))
+            If Not m.Exists(s) Then Err.Raise vbObjectError + 110, , "Status not configured in Parameters: " & s
+            counts(m(s)) = counts(m(s)) + 1
+        End If
+    Next r
+    key = KPIWeekKey(ws.Name)
+    lastKPI = kpi.Cells(kpi.Rows.Count, 3).End(xlUp).Row
+    If lastKPI < 5 Then lastKPI = 5
+    For r = 5 To lastKPI
+        If StrComp(Trim$(CStr(kpi.Cells(r, 3).Value2)), key, vbTextCompare) = 0 Then targetRow = r: Exit For
+    Next r
+    If targetRow = 0 Then
+        If Len(Trim$(CStr(kpi.Cells(5, 3).Value2))) = 0 Then targetRow = 5 Else targetRow = lastKPI + 1
+        isNew = True
+        If targetRow > 5 Then
+            kpi.Range(kpi.Cells(targetRow - 1, 2), kpi.Cells(targetRow - 1, 12)).Copy
+            kpi.Cells(targetRow, 2).PasteSpecial xlPasteFormats
+            kpi.Range(kpi.Cells(targetRow - 1, 10), kpi.Cells(targetRow - 1, 12)).Copy Destination:=kpi.Cells(targetRow, 10)
+            Application.CutCopyMode = False
+        End If
+    End If
+    kpi.Cells(targetRow, 2).Value = Date
+    kpi.Cells(targetRow, 3).Value = key
+    For c = 4 To 8: kpi.Cells(targetRow, c).Value = counts(c): Next c
+    kpi.Cells(targetRow, 9).Formula = "=SUM(D" & targetRow & ":H" & targetRow & ")"
+    kpi.Cells(targetRow, 11).Formula = "=SUM(D" & targetRow & ":F" & targetRow & ")"
+    kpi.Cells(targetRow, 2).NumberFormat = "dd/mm/yyyy"
+End Sub
+
+Private Function KPIStatusColumns(host As Workbook) As Object
+    Dim d As Object, p As Worksheet, lastRow As Long, r As Long, s As String, clr As Long, col As Long
+    Set d = CreateObject("Scripting.Dictionary"): d.CompareMode = vbTextCompare
+    Set p = SheetByName(host, "Parameters")
+    If p Is Nothing Then Err.Raise vbObjectError + 107, , "The Parameters sheet was not found."
+    lastRow = p.Cells(p.Rows.Count, 3).End(xlUp).Row
+    For r = 1 To lastRow
+        s = UCase$(Trim$(CStr(p.Cells(r, 3).Value2)))
+        If Len(s) > 0 Then
+            clr = p.Cells(r, 4).Interior.Color: col = 0
+            Select Case clr
+                Case RGB(255, 0, 0): col = 4
+                Case RGB(255, 255, 0): col = 5
+                Case RGB(146, 208, 80): col = 6
+                Case RGB(0, 176, 80): col = 7
+                Case RGB(166, 166, 166): col = 8
+            End Select
+            If col = 0 Then Err.Raise vbObjectError + 111, , "Unsupported KPI color for status: " & s
+            d(s) = col
+        End If
+    Next r
+    Set KPIStatusColumns = d
+End Function
+
+Private Function KPIWeekKey(ByVal sheetName As String) As String
+    Dim n As String
+    n = UCase$(sheetName)
+    If n Like "####-W##" Then
+        KPIWeekKey = Mid$(n, 3, 2) & "-W" & Right$(n, 2)
+    ElseIf n Like "W##" Then
+        KPIWeekKey = Right$(CStr(Year(Date)), 2) & "-" & n
+    Else
+        Err.Raise vbObjectError + 112, , "Invalid weekly sheet name: " & sheetName
+    End If
+End Function
 
 Private Function EligibleIssues(ws As Worksheet, h As Object, projects As Object, ByRef removed As Long) As Object
     Dim d As Object, topD As Object, lastRow As Long, lastCol As Long
