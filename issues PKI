@@ -1,0 +1,398 @@
+Option Explicit
+
+Public Sub InstallWeeklyUpdateButton()
+    Dim ws As Worksheet, shp As Shape
+    Set ws = ThisWorkbook.Worksheets("Instructions")
+    On Error Resume Next
+    ws.Shapes("btnUpdateWeeklyFile").Delete
+    On Error GoTo 0
+    Set shp = ws.Shapes.AddShape(msoShapeRoundedRectangle, ws.Range("B10").Left, ws.Range("B10").Top, ws.Range("B10:E12").Width, ws.Range("B10:E12").Height)
+    With shp
+        .Name = "btnUpdateWeeklyFile"
+        .OnAction = "UpdateWeeklyFile"
+        .Fill.ForeColor.RGB = RGB(47, 117, 181)
+        .Line.ForeColor.RGB = RGB(31, 78, 121)
+        .TextFrame2.TextRange.Text = "UPDATE WEEKLY FILE"
+        .TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(255, 255, 255)
+        .TextFrame2.TextRange.Font.Bold = msoTrue
+        .TextFrame2.TextRange.Font.Size = 15
+        .TextFrame2.VerticalAnchor = msoAnchorMiddle
+        .TextFrame2.TextRange.ParagraphFormat.Alignment = msoAlignCenter
+    End With
+    MsgBox "The update button is ready.", vbInformation
+End Sub
+
+Public Sub UpdateWeeklyFile()
+    Dim host As Workbook, srcWb As Workbook, srcWs As Worksheet
+    Dim prevWs As Worksheet, newWs As Worksheet, h As Object, d As Object, projects As Object
+    Dim target As String
+    Dim added As Long, changed As Long, filled As Long, kept As Long, removed As Long
+    Dim calc As XlCalculation
+
+    On Error GoTo Fail
+    Set host = ThisWorkbook
+    calc = Application.Calculation
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
+
+    Set srcWb = ChooseOpenExportWorkbook(host)
+    If srcWb Is Nothing Then GoTo SafeExit
+
+
+
+
+
+
+
+
+    Set srcWs = SheetByName(srcWb, "Export")
+    If srcWs Is Nothing Then Err.Raise vbObjectError + 101, , "The selected file has no Export sheet."
+    Set h = HeaderMap(srcWs)
+    ValidateHeaders h
+    Set projects = SmartCarProjects(host)
+    If projects.Count = 0 Then Err.Raise vbObjectError + 105, , "The Parameters sheet contains no Smart Car projects."
+    Set d = EligibleIssues(srcWs, h, projects, removed)
+
+    target = ISOYear(Date) & "-W" & Format$(ISOWeek(Date), "00")
+    Set newWs = SheetByName(host, target)
+    If Not newWs Is Nothing Then
+        If MsgBox("The sheet " & target & " already exists. Refresh it in place?", vbYesNo + vbQuestion) <> vbYes Then GoTo SafeExit
+    Else
+        Set prevWs = LatestWeeklySheet(host)
+        If prevWs Is Nothing Then Err.Raise vbObjectError + 102, , "No previous weekly sheet was found."
+        prevWs.Copy After:=prevWs
+        Set newWs = ActiveSheet
+        newWs.Name = target
+    End If
+
+    UpdateWeeklySheet newWs, d, added, changed, filled, kept
+    newWs.Activate
+    MsgBox "Weekly update completed:" & vbCrLf & _
+           "Sheet: " & target & vbCrLf & _
+           "Eligible unique issues: " & d.Count & vbCrLf & _
+           "New issues added: " & added & vbCrLf & _
+           "Statuses changed: " & changed & vbCrLf & _
+           "Blank fields completed: " & filled & vbCrLf & _
+           "Duplicate Export rows removed: " & removed & vbCrLf & _
+           "Rows retained without eligible Export match: " & kept, vbInformation
+
+SafeExit:
+    On Error Resume Next
+
+    Application.Calculation = calc
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+    Exit Sub
+Fail:
+    MsgBox "Update stopped: " & Err.Description, vbCritical
+    Resume SafeExit
+End Sub
+
+Private Function EligibleIssues(ws As Worksheet, h As Object, projects As Object, ByRef removed As Long) As Object
+    Dim d As Object, topD As Object, lastRow As Long, lastCol As Long
+    Dim s As Long, e As Long, i As Long, a As Variant, id As String, projectText As String
+    Dim n2 As String, pr As String, pa As String, topFlag As Boolean
+    Dim rec As Variant, k As Variant
+    Set d = CreateObject("Scripting.Dictionary"): d.CompareMode = vbTextCompare
+    Set topD = CreateObject("Scripting.Dictionary"): topD.CompareMode = vbTextCompare
+    lastRow = ws.Cells(ws.Rows.Count, h("ISSUE_NAME")).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 13 Then Err.Raise vbObjectError + 106, , "The Export sheet has no project column M."
+
+    For s = 2 To lastRow Step 5000
+        e = WorksheetFunction.Min(lastRow, s + 4999)
+        a = ws.Range(ws.Cells(s, 1), ws.Cells(e, lastCol)).Value2
+        For i = 1 To UBound(a, 1)
+            projectText = Trim$(CStr(a(i, 13)))
+            n2 = UCase$(Trim$(CStr(a(i, h("N2")))))
+            pr = UCase$(Trim$(CStr(a(i, h("PLANT REGION")))))
+            pa = UCase$(Trim$(CStr(a(i, h("POTENTIALLY AFFECT. REGION")))))
+            If IsSmartCarProject(projectText, projects) And (n2 = "SWE" Or n2 = "EHE") And AllowedRegion(pr, pa) Then
+                id = Trim$(CStr(a(i, h("ISSUE_NAME"))))
+                If Len(id) > 0 Then
+                    topFlag = UCase$(Trim$(CStr(a(i, h("TOP/STANDARD"))))) = "TOP"
+                    rec = Array( _
+                        a(i, h("ISSUE COLOR STATUS")), id, a(i, h("ISSUE ORIGINAL ID")), _
+                        UCase$(CStr(a(i, h("CATEGORY")))), a(i, h("ISSUE TITLE")), _
+                        a(i, h("TOP/STANDARD")), a(i, h("TE/ISSUE CREATION DATE")), _
+                        SourceValue(a(i, h("ISSUE SOURCE")), a(i, h("SOURCE SYSTEM"))), _
+                        a(i, h("N2")), a(i, h("N3")), a(i, h("RESOL. RESP. L2")), "", _
+                        a(i, h("TE/ISSUE PILOT")), a(i, h("ISSUE CREATOR")))
+                    If Not d.Exists(id) Then
+                        d.Add id, rec: topD.Add id, topFlag
+                    Else
+                        removed = removed + 1
+                        If Not topD(id) And topFlag Then d(id) = rec: topD(id) = True
+                    End If
+                End If
+            End If
+        Next i
+    Next s
+    Set EligibleIssues = d
+End Function
+
+Private Sub UpdateWeeklySheet(ws As Worksheet, d As Object, ByRef added As Long, ByRef changed As Long, ByRef filled As Long, ByRef kept As Long)
+    Dim rows As Object, expKeys As Object, w As Object, lastRow As Long, firstNewRow As Long, lastCol As Long
+    Dim r As Long, c As Long, b As String, oldRef As String, k As Variant, rec As Variant, rowNum As Long
+    Dim oldStatus As String, newStatus As String, targets As Variant, tc As Long
+    Set rows = CreateObject("Scripting.Dictionary"): rows.CompareMode = vbTextCompare
+    Set expKeys = CreateObject("Scripting.Dictionary"): expKeys.CompareMode = vbTextCompare
+    Set w = HeaderMap(ws)
+    ValidateWeeklyHeaders w
+    targets = Array("STATUS", "S2IRIUS", "OLD REFERENCE", "TYPE OF ISSUE", "ISSUE DESCRIPTION", _
+                    "TOP / STANDARD", "ASSIGNEMENT DATE", "SOURCE", "ENG FUNCTIONAL GROUP", _
+                    "ENG FUNCTIONAL UNDER GROUP", "ENG FUNCTION / AREA", "QCR LEADER", _
+                    "ISSUE MANAGER", "ISSUE SOLVER")
+    lastRow = LastIssueRow(ws, w): firstNewRow = lastRow + 1
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    For r = 2 To lastRow
+        b = Trim$(CStr(ws.Cells(r, w("S2IRIUS")).Value2))
+        oldRef = Trim$(CStr(ws.Cells(r, w("OLD REFERENCE")).Value2))
+        If Len(b) > 0 And Not rows.Exists(b) Then rows.Add b, r
+        If Len(oldRef) > 0 And Not rows.Exists(oldRef) Then rows.Add oldRef, r
+    Next r
+
+    For Each k In d.Keys
+        rec = d(k)
+        expKeys(CStr(rec(1))) = True
+        If Len(Trim$(CStr(rec(2)))) > 0 Then expKeys(CStr(rec(2))) = True
+        rowNum = 0
+        If rows.Exists(CStr(rec(1))) Then rowNum = rows(CStr(rec(1)))
+        If rowNum = 0 And Len(Trim$(CStr(rec(2)))) > 0 Then If rows.Exists(CStr(rec(2))) Then rowNum = rows(CStr(rec(2)))
+
+        If rowNum > 0 Then
+            newStatus = Trim$(CStr(rec(0)))
+            oldStatus = Trim$(CStr(ws.Cells(rowNum, w("STATUS")).Value2))
+            If Len(newStatus) > 0 Then
+                If StrComp(oldStatus, newStatus, vbTextCompare) <> 0 Then changed = changed + 1
+                ws.Cells(rowNum, w("STATUS")).Value = newStatus
+                ColourStatus ws.Cells(rowNum, w("STATUS")), False
+            End If
+            For c = 1 To 13
+                tc = w(CStr(targets(c)))
+                If Len(Trim$(CStr(ws.Cells(rowNum, tc).Value2))) = 0 And Len(Trim$(CStr(rec(c)))) > 0 Then
+                    ws.Cells(rowNum, tc).Value = rec(c)
+                    filled = filled + 1
+                End If
+            Next c
+            FillDatesIfBlank ws, rowNum, w
+        Else
+            lastRow = lastRow + 1
+            ws.Rows(2).Copy
+            ws.Rows(lastRow).PasteSpecial xlPasteFormats
+            Application.CutCopyMode = False
+            ws.Range(ws.Cells(lastRow, 1), ws.Cells(lastRow, lastCol)).Interior.Color = RGB(255, 255, 255)
+            For c = 0 To 13: ws.Cells(lastRow, w(CStr(targets(c)))).Value = rec(c): Next c
+            ws.Cells(lastRow, w("TODAY")).Value = Date
+            If IsDate(ws.Cells(lastRow, w("ASSIGNEMENT DATE")).Value) Then _
+                ws.Cells(lastRow, w("AGING")).FormulaR1C1 = "=IFERROR(RC" & w("TODAY") & "-RC" & w("ASSIGNEMENT DATE") & ","""")"
+            ColourStatus ws.Cells(lastRow, w("STATUS")), True
+            rows(CStr(rec(1))) = lastRow
+            If Len(Trim$(CStr(rec(2)))) > 0 Then rows(CStr(rec(2))) = lastRow
+            added = added + 1
+        End If
+    Next k
+
+    If added > 0 Then
+        ws.Rows(firstNewRow & ":" & lastRow).Cut
+        ws.Rows(2).Insert Shift:=xlDown
+        Application.CutCopyMode = False
+    End If
+
+    For r = 2 To lastRow
+        b = Trim$(CStr(ws.Cells(r, w("S2IRIUS")).Value2))
+        oldRef = Trim$(CStr(ws.Cells(r, w("OLD REFERENCE")).Value2))
+        If Len(b) > 0 Then If Not expKeys.Exists(b) And Not expKeys.Exists(oldRef) Then kept = kept + 1
+    Next r
+    ws.Columns(w("ASSIGNEMENT DATE")).NumberFormat = "dd/mm/yyyy"
+    ws.Columns(w("TODAY")).NumberFormat = "dd/mm/yyyy"
+    ws.Columns(w("AGING")).NumberFormat = "0"
+End Sub
+
+Private Sub FillDatesIfBlank(ws As Worksheet, ByVal r As Long, w As Object)
+    If Len(Trim$(CStr(ws.Cells(r, w("TODAY")).Value2))) = 0 Then ws.Cells(r, w("TODAY")).Value = Date
+    If Len(Trim$(CStr(ws.Cells(r, w("AGING")).Value2))) = 0 And IsDate(ws.Cells(r, w("ASSIGNEMENT DATE")).Value) Then _
+        ws.Cells(r, w("AGING")).FormulaR1C1 = "=IFERROR(RC" & w("TODAY") & "-RC" & w("ASSIGNEMENT DATE") & ","""")"
+End Sub
+
+Private Sub ColourStatus(cell As Range, ByVal isNew As Boolean)
+    Dim p As Worksheet, lastRow As Long, r As Long, s As String
+    cell.Font.Color = RGB(0, 0, 0)
+    If isNew Then
+        cell.Interior.Color = RGB(192, 0, 0): cell.Font.Color = RGB(255, 255, 255): Exit Sub
+    End If
+    s = Trim$(CStr(cell.Value2))
+    Set p = SheetByName(ThisWorkbook, "Parameters")
+    If p Is Nothing Then Err.Raise vbObjectError + 107, , "The Parameters sheet was not found."
+    lastRow = p.Cells(p.Rows.Count, 3).End(xlUp).Row
+    For r = 1 To lastRow
+        If StrComp(Trim$(CStr(p.Cells(r, 3).Value2)), s, vbTextCompare) = 0 Then
+            cell.Interior.Color = p.Cells(r, 4).Interior.Color
+            cell.Font.Color = p.Cells(r, 4).Font.Color
+            Exit Sub
+        End If
+    Next r
+    cell.Interior.Color = RGB(255, 255, 255)
+End Sub
+
+Private Function HeaderMap(ws As Worksheet) As Object
+    Dim d As Object, lastCol As Long, c As Long, s As String
+    Set d = CreateObject("Scripting.Dictionary"): d.CompareMode = vbTextCompare
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        s = HeaderKey(CStr(ws.Cells(1, c).Value2))
+        If Len(s) > 0 Then
+            d(s) = c
+        End If
+    Next c
+    Set HeaderMap = d
+End Function
+
+Private Function HeaderKey(ByVal s As String) As String
+    s = Replace(s, Chr$(160), " "): s = Replace(s, vbTab, " ")
+    s = Replace(s, vbCr, " "): s = Replace(s, vbLf, " "): s = Trim$(s)
+    Do While InStr(s, "  ") > 0: s = Replace(s, "  ", " "): Loop
+    s = Replace(s, " ?", "?")
+    If UCase$(s) = "TTF CLOCK" Then s = "AGING"
+    HeaderKey = UCase$(s)
+End Function
+
+Private Sub ValidateHeaders(h As Object)
+    Dim a As Variant, x As Variant, miss As String
+    a = Array("CATEGORY", "ISSUE_NAME", "Issue title", "ISSUE COLOR STATUS", "N2", "N3", _
+              "Resol. Resp. L2", "TOP/STANDARD", "TE/ISSUE Pilot", "TE/ISSUE CREATION DATE", _
+              "SOURCE SYSTEM", "ISSUE SOURCE", "Issue Original ID", "Plant Region", _
+              "Potentially affect. region", "Issue creator")
+    For Each x In a: If Not h.Exists(CStr(x)) Then miss = miss & vbCrLf & "- " & x
+    Next x
+    If Len(miss) > 0 Then Err.Raise vbObjectError + 103, , "Missing Export headers:" & miss
+End Sub
+
+Private Sub ValidateWeeklyHeaders(w As Object)
+    Dim a As Variant, x As Variant, miss As String
+    a = Array("STATUS", "S2IRIUS", "OLD REFERENCE", "TYPE OF ISSUE", "ISSUE DESCRIPTION", _
+              "TOP / STANDARD", "ASSIGNEMENT DATE", "SOURCE", "ENG FUNCTIONAL GROUP", _
+              "ENG FUNCTIONAL UNDER GROUP", "ENG FUNCTION / AREA", "QCR LEADER", _
+              "ISSUE MANAGER", "ISSUE SOLVER", "TODAY", "AGING")
+    For Each x In a: If Not w.Exists(CStr(x)) Then miss = miss & vbCrLf & "- " & x
+    Next x
+    If Len(miss) > 0 Then Err.Raise vbObjectError + 104, , "Missing weekly-sheet headers:" & miss
+End Sub
+
+Private Function SmartCarProjects(host As Workbook) As Object
+    Dim d As Object, ws As Worksheet, lastRow As Long, r As Long, s As String
+    Set d = CreateObject("Scripting.Dictionary"): d.CompareMode = vbTextCompare
+    Set ws = SheetByName(host, "Parameters")
+    If ws Is Nothing Then Err.Raise vbObjectError + 105, , "The Parameters sheet was not found."
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    For r = 2 To lastRow
+        s = UCase$(Trim$(CStr(ws.Cells(r, 1).Value2)))
+        If Len(s) > 0 Then d(s) = True
+    Next r
+    Set SmartCarProjects = d
+End Function
+
+Private Function IsSmartCarProject(ByVal projectText As String, projects As Object) As Boolean
+    Dim k As Variant, s As String
+    s = UCase$(Trim$(projectText))
+    For Each k In projects.Keys
+        If InStr(1, s, CStr(k), vbTextCompare) > 0 Then IsSmartCarProject = True: Exit Function
+    Next k
+End Function
+
+Private Function AllowedRegion(pr As String, pa As String) As Boolean
+    AllowedRegion = (pr = "EE" Or pr Like "EE -*" Or pr = "SA" Or pr Like "SA -*" Or _
+                     InStr(pr, "EMEA") > 0 Or InStr(pr, "MIDDLE EAST & AFRICA") > 0 Or _
+                     InStr(pa, "EMEA") > 0 Or InStr(pa, "MIDDLE EAST & AFRICA") > 0)
+End Function
+
+Private Function SourceValue(issueSource As Variant, sourceSystem As Variant) As Variant
+    If Len(Trim$(CStr(issueSource))) > 0 Then SourceValue = issueSource Else SourceValue = sourceSystem
+End Function
+
+Private Function LastIssueRow(ws As Worksheet, w As Object) As Long
+    LastIssueRow = WorksheetFunction.Max(2, _
+        ws.Cells(ws.Rows.Count, w("S2IRIUS")).End(xlUp).Row, _
+        ws.Cells(ws.Rows.Count, w("OLD REFERENCE")).End(xlUp).Row)
+End Function
+
+Private Function SheetByName(wb As Workbook, nm As String) As Worksheet
+    On Error Resume Next
+    Set SheetByName = wb.Worksheets(nm)
+    On Error GoTo 0
+End Function
+
+Private Function LatestWeeklySheet(wb As Workbook) As Worksheet
+    Dim ws As Worksheet, key As Long, best As Long, y As Long, w As Long, n As String
+    For Each ws In wb.Worksheets
+        n = UCase$(ws.Name): key = 0
+        If n Like "####-W##" Then
+            y = Val(Left$(n, 4)): w = Val(Right$(n, 2)): key = y * 100 + w
+        ElseIf n Like "W##" Then
+            key = Year(Date) * 100 + Val(Mid$(n, 2))
+        End If
+        If key > best Then best = key: Set LatestWeeklySheet = ws
+    Next ws
+End Function
+
+Private Function ISOWeek(d As Date) As Long
+    ISOWeek = DatePart("ww", d, vbMonday, vbFirstFourDays)
+End Function
+
+Private Function ISOYear(d As Date) As Long
+    ISOYear = Year(d - Weekday(d, vbMonday) + 4)
+End Function
+
+
+
+
+
+
+Private Function ChooseOpenExportWorkbook(host As Workbook) As Workbook
+    Dim wb As Workbook, chosen As Workbook, testWs As Worksheet
+    Dim names As String, answer As Variant
+    Dim list As Collection
+    Set list = New Collection
+
+    For Each wb In Application.Workbooks
+        If Not wb Is host And Not wb.IsAddin Then
+            list.Add wb
+            names = names & vbCrLf & list.Count & " - " & wb.Name
+        End If
+    Next wb
+
+    If list.Count = 0 Then
+        MsgBox "Aucun autre classeur n’est visible dans cette session Excel." & vbCrLf & _
+               "Ouvrez le fichier Export dans la même fenêtre Excel, puis relancez la mise à jour." & vbCrLf & _
+               "Un fichier ouvert dans une autre instance Excel ne peut pas être détecté.", vbExclamation
+        Exit Function
+    End If
+
+    If list.Count = 1 Then
+        If MsgBox("Utiliser ce classeur ouvert ?" & vbCrLf & list(1).Name, _
+                  vbYesNo + vbQuestion) <> vbYes Then Exit Function
+        Set chosen = list(1)
+    Else
+        answer = Application.InputBox("Choisissez un classeur ouvert par son numéro :" & vbCrLf & names, _
+                                      "Choisir le fichier Export ouvert", Type:=1)
+        If VarType(answer) = vbBoolean Then Exit Function
+        If answer < 1 Or answer > list.Count Or answer <> Int(answer) Then
+            MsgBox "Sélection incorrecte.", vbExclamation
+            Exit Function
+        End If
+        Set chosen = list(CLng(answer))
+    End If
+
+    Set testWs = SheetByName(chosen, "Export")
+    If testWs Is Nothing Then
+        MsgBox "Le classeur " & chosen.Name & " ne contient pas d’onglet Export." & vbCrLf & _
+               "Aucune modification n’a été effectuée.", vbExclamation
+        Exit Function
+    End If
+
+    Set ChooseOpenExportWorkbook = chosen
+End Function
